@@ -954,7 +954,7 @@
   $("cfgPickLogo").addEventListener("click",function(){ $("cfgLogoFile").click(); });
   $("cfgLogoFile").addEventListener("change",function(){
     var f=this.files&&this.files[0]; if(!f) return;
-    scaleImage(f,160,function(d,cols){ if(!d) return; pendingLogo=d; pendingColors=cols||DEF_COLORS;
+    scaleImage(f,240,function(d,cols){ if(!d) return; pendingLogo=d; pendingColors=cols||DEF_COLORS;
       fillLogo($("setupLogo"),pendingLogo); applyColors(pendingColors); $("cfgClearLogo").classList.remove("hidden"); });
   });
   $("cfgClearLogo").addEventListener("click",function(){ pendingLogo=null; pendingColors=null; $("cfgLogoFile").value="";
@@ -985,6 +985,57 @@
     setTimeout(function(){ paintIdentity(load()); poolStart().then(function(){ if(openId) openContact(openId); else showContacts(); }); },400);
   });
 
+  // ---------- ícone da tela inicial = logo da pessoa/empresa ----------
+  // Monta o ícone do atalho com a logo escolhida (fundo branco, logo centralizada).
+  // Android usa o "manifest" com esse ícone; iPhone usa o apple-touch-icon.
+  var _mfBlob=null;
+  function buildIcon(logo,size){
+    return new Promise(function(res){
+      var img=new Image();
+      img.onload=function(){
+        try{
+          var c=document.createElement("canvas"); c.width=size; c.height=size;
+          var x=c.getContext("2d");
+          x.fillStyle="#ffffff"; x.fillRect(0,0,size,size);
+          var pad=Math.round(size*0.12), box=size-2*pad;
+          var s=Math.min(box/img.width, box/img.height);
+          var w=Math.round(img.width*s), h=Math.round(img.height*s);
+          x.drawImage(img,Math.round((size-w)/2),Math.round((size-h)/2),w,h);
+          res(c.toDataURL("image/png"));
+        }catch(e){ res(null); }
+      };
+      img.onerror=function(){ res(null); };
+      img.src=logo;
+    });
+  }
+  async function applyDynamicManifest(){
+    try{
+      var cfg=load()||{}, name=(cfg.name||"Portal");
+      var icons=null, apple=null;
+      if(cfg.logo){
+        var i192=await buildIcon(cfg.logo,192), i512=await buildIcon(cfg.logo,512);
+        if(i192 && i512){
+          icons=[{src:i192,sizes:"192x192",type:"image/png",purpose:"any"},
+                 {src:i512,sizes:"512x512",type:"image/png",purpose:"any"}];
+          apple=i192;
+        }
+      }
+      if(!icons){ icons=[{src:"icon-192.png",sizes:"192x192",type:"image/png"},
+                         {src:"icon-512.png",sizes:"512x512",type:"image/png"}]; }
+      var m={name:name,short_name:name.slice(0,12),start_url:".",scope:"./",display:"standalone",
+             background_color:"#0f172a",theme_color:"#0f172a",icons:icons};
+      var mlink=document.querySelector('link[rel="manifest"]');
+      if(mlink){
+        try{ if(_mfBlob) URL.revokeObjectURL(_mfBlob); }catch(e){}
+        _mfBlob=URL.createObjectURL(new Blob([JSON.stringify(m)],{type:"application/manifest+json"}));
+        mlink.setAttribute("href",_mfBlob);
+      }
+      var apples=document.querySelectorAll('link[rel="apple-touch-icon"]');
+      for(var i=0;i<apples.length;i++){ apples[i].setAttribute("href", apple||"icon-192.png"); }
+      var ic=document.querySelector('link[rel="icon"]'); if(ic) ic.setAttribute("href", apple||"icon-192.png");
+    }catch(e){}
+  }
+
   // ---------- identidade visual ----------
   function paintIdentity(cfg){
     cfg=cfg||load()||{}; var nm=cfg.name||"Portal";
@@ -993,6 +1044,7 @@
     applyColors(cfg.colors||DEF_COLORS);
     lockOnHide=(cfg.lockOnHide!==false); paintSwitch();
     keepAwake=(cfg.keepAwake===true); paintWake();
+    applyDynamicManifest();   // ícone do atalho = logo da pessoa/empresa
   }
 
   // ---------- convite (link + QR) ----------
@@ -1100,7 +1152,7 @@
     q("pfName").value=cfg.name||""; fillLogo(q("pfPreview"),tmpLogo); if(tmpLogo) q("pfClear").classList.remove("hidden");
     q("pfPick").addEventListener("click",function(){ q("pfFile").click(); });
     q("pfFile").addEventListener("change",function(){ var f=this.files&&this.files[0]; if(!f) return;
-      scaleImage(f,160,function(d,cols){ if(!d) return; tmpLogo=d; tmpColors=cols||DEF_COLORS; fillLogo(q("pfPreview"),tmpLogo); q("pfClear").classList.remove("hidden"); }); });
+      scaleImage(f,240,function(d,cols){ if(!d) return; tmpLogo=d; tmpColors=cols||DEF_COLORS; fillLogo(q("pfPreview"),tmpLogo); q("pfClear").classList.remove("hidden"); }); });
     q("pfClear").addEventListener("click",function(){ tmpLogo=null; tmpColors=null; q("pfFile").value=""; fillLogo(q("pfPreview"),null); this.classList.add("hidden"); });
     function close(){ try{ document.body.removeChild(box); }catch(e){} }
     q("pfCancel").addEventListener("click",close);
