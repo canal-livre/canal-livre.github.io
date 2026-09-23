@@ -236,7 +236,25 @@
     </div>
 
     <!-- ===== CONTATOS ===== -->
-    <div id="contacts" class="hidden">
+    <div id="contacts" class="hidden" style="position:relative">
+      <button class="iconbtn" id="cMenuBtn" title="Ajustes"
+        style="position:absolute;top:16px;right:14px;font-size:24px;z-index:7">&#8942;</button>
+      <div class="menu hidden" id="cmenu" style="top:48px;right:12px">
+        <button id="cSwLock">
+          <span class="swrow"><span class="sl">Encerrar ao sair da tela
+            <small>Fecha a conversa e apaga a tela ao trocar de app</small></span>
+            <span class="sw" id="cSwLockUI"><i></i></span></span>
+        </button>
+        <button id="cWakeBtn">
+          <span class="swrow"><span class="sl">Manter tela ligada
+            <small>Enquanto o app estiver aberto, a tela não apaga sozinha</small></span>
+            <span class="sw" id="cWakeUI"><i></i></span></span>
+        </button>
+        <button id="cAvailBtn">Minha disponibilidade</button>
+        <button id="cProfileBtn">Meu nome e foto</button>
+        <button id="cReconfigBtn">Reconfigurar tudo</button>
+        <button id="cLockBtn">Bloquear agora</button>
+      </div>
       <div class="top" style="padding-bottom:2px">
         <div class="logowrap"><div class="logo" id="meLogo"></div></div>
         <div class="company" id="meName">Suas conversas</div>
@@ -502,6 +520,8 @@
   function contactLabel(c){ return (c && (c.alias||c.name)) || "Novo contato"; }
   function seenOf(c){ try{ return parseInt(localStorage.getItem("cv_seen_"+c.id)||"0",10)||0; }catch(e){ return 0; } }
   function markSeen(id){ try{ localStorage.setItem("cv_seen_"+id, String(Date.now())); }catch(e){} }
+  function markLast(id){ try{ localStorage.setItem("cv_last", id); }catch(e){} }
+  function getLast(){ try{ return localStorage.getItem("cv_last")||""; }catch(e){ return ""; } }
   async function saveContacts(){
     if(!VK) return; var cfg=load(); if(!cfg) return;
     try{ cfg.vault=await sealWith(VK,{contacts:CONTACTS.map(function(c){ return {id:c.id,name:c.name,alias:c.alias,pair:c.pair,role:c.role,ts:c.ts}; })}); save(cfg); }catch(e){}
@@ -526,7 +546,7 @@
     else { activateChannel(id); }
   }
 
-  function showContacts(){ activeId=null; renderContacts(); show("contacts"); }
+  function showContacts(){ activeId=null; renderContacts(); paintSwitch(); paintWake(); show("contacts"); applyWake(); }
   function renderContacts(){
     var box=$("contactList"); if(!box) return; box.innerHTML="";
     if(!CONTACTS.length){ $("contactsEmpty").classList.remove("hidden"); return; }
@@ -802,7 +822,7 @@
 
   // ---------- conversa ativa ----------
   function activateChannel(id){
-    activeId=id;
+    activeId=id; markLast(id);
     var k=CH[id], c=contactById(id); if(!k) return;
     wireOnce(); paintSwitch(); paintWake(); applyWake();
     $("messages").innerHTML=""; setMsg(false); show("inside");
@@ -900,13 +920,27 @@
   // ---------- manter tela ligada ----------
   var wakeSupported = ("wakeLock" in navigator);
   async function acquireWake(){
-    if(!wakeSupported || !keepAwake) return; if(document.hidden || !insideVisible()) return;
+    if(!wakeSupported || !keepAwake) return; if(document.hidden || !(insideVisible()||contactsVisible())) return;
     try{ wakeSentinel=await navigator.wakeLock.request("screen"); wakeSentinel.addEventListener("release",function(){ wakeSentinel=null; }); }catch(e){ wakeSentinel=null; }
   }
   async function releaseWake(){ try{ if(wakeSentinel){ await wakeSentinel.release(); } }catch(e){} wakeSentinel=null; }
   function applyWake(){ if(keepAwake) acquireWake(); else releaseWake(); }
-  function paintSwitch(){ $("swLockUI").classList.toggle("on", !!lockOnHide); }
-  function paintWake(){ $("wakeUI").classList.toggle("on", !!keepAwake); }
+  function paintSwitch(){ ["swLockUI","cSwLockUI"].forEach(function(id){ var e=$(id); if(e) e.classList.toggle("on",!!lockOnHide); }); }
+  function paintWake(){ ["wakeUI","cWakeUI"].forEach(function(id){ var e=$(id); if(e) e.classList.toggle("on",!!keepAwake); }); }
+  // ações usadas pelos DOIS menus (o da conversa e o dos contatos)
+  function toggleLockOnHide(){ lockOnHide=!lockOnHide; paintSwitch(); var c=load(); if(c){ c.lockOnHide=lockOnHide; save(c); } }
+  function toggleWake(){
+    if(!wakeSupported){ keepAwake=false; paintWake(); addSystem("Este aparelho não permite manter a tela ligada."); return; }
+    keepAwake=!keepAwake; paintWake(); var c=load(); if(c){ c.keepAwake=keepAwake; save(c); } applyWake();
+  }
+  function editAvail(){
+    var atual=myAvail();
+    var txt=window.prompt("Escreva quando você costuma ficar disponível (a outra pessoa vê isto):", atual||"");
+    if(txt===null) return; txt=String(txt).slice(0,60);
+    var c=load(); if(c){ c.avail=txt; save(c); }
+    Object.keys(CH).forEach(function(id){ sendHelloCh(CH[id]); }); fbAvailAll();
+  }
+  function doReconfig(){ if(window.confirm("Isto apaga o seu acesso e TODOS os contatos deste aparelho. Continuar?")){ wipe(); location.reload(); } }
 
   function wireOnce(){
     if(wired) return; wired=true;
@@ -924,18 +958,9 @@
     $("menuBtn").addEventListener("click",function(){ $("menu").classList.toggle("hidden"); });
     document.addEventListener("click",function(e){
       if(!$("menu").classList.contains("hidden") && !$("menu").contains(e.target) && e.target!==$("menuBtn")){ $("menu").classList.add("hidden"); } });
-    $("swLock").addEventListener("click",function(e){ e.stopPropagation(); lockOnHide=!lockOnHide; paintSwitch();
-      var c=load(); if(c){ c.lockOnHide=lockOnHide; save(c); } });
-    $("wakeBtn").addEventListener("click",function(e){ e.stopPropagation();
-      if(!wakeSupported){ keepAwake=false; paintWake(); addSystem("Este aparelho não permite manter a tela ligada."); return; }
-      keepAwake=!keepAwake; paintWake(); var c=load(); if(c){ c.keepAwake=keepAwake; save(c); } applyWake(); });
-    $("availBtn").addEventListener("click",function(){
-      $("menu").classList.add("hidden"); var atual=myAvail();
-      var txt=window.prompt("Escreva quando você costuma ficar disponível (a outra pessoa vê isto):", atual||"");
-      if(txt===null) return; txt=String(txt).slice(0,60);
-      var c=load(); if(c){ c.avail=txt; save(c); }
-      Object.keys(CH).forEach(function(id){ sendHelloCh(CH[id]); }); fbAvailAll();
-    });
+    $("swLock").addEventListener("click",function(e){ e.stopPropagation(); toggleLockOnHide(); });
+    $("wakeBtn").addEventListener("click",function(e){ e.stopPropagation(); toggleWake(); });
+    $("availBtn").addEventListener("click",function(){ $("menu").classList.add("hidden"); editAvail(); });
     $("inviteThisBtn").addEventListener("click",function(){ $("menu").classList.add("hidden"); if(activeId){ var k=CH[activeId]; if(k) showInvite(k.pair); } });
     $("reconnectBtn").addEventListener("click",function(){ $("menu").classList.add("hidden"); var k=CH[activeId]; if(k){ setConn("Reconectando..."); maybeConnect(k); } });
     $("backMenuBtn").addEventListener("click",function(){ $("menu").classList.add("hidden"); if(activeId) markSeen(activeId); showContacts(); });
@@ -1110,7 +1135,7 @@
     setTimeout(function(){
       poolStart().then(function(){
         if(pend.length>=12){ addContactFromPair(pend,true,"b"); }
-        else { showContacts(); }
+        else { var last=getLast(); if(last && contactById(last)) openContact(last); else showContacts(); }
       });
     },250);
   });
@@ -1125,8 +1150,20 @@
   });
   $("profileBtn").addEventListener("click",showProfile);
   $("lockBackBtn").addEventListener("click",function(){ startLocked(); });
-  $("reconfigBtn2").addEventListener("click",function(){
-    if(window.confirm("Isto apaga o seu acesso e TODOS os contatos deste aparelho. Continuar?")){ wipe(); location.reload(); } });
+  $("reconfigBtn2").addEventListener("click",doReconfig);
+
+  // menu ⋮ da tela de contatos (mesmos ajustes que ficavam dentro da conversa)
+  function closeCMenu(){ $("cmenu").classList.add("hidden"); }
+  $("cMenuBtn").addEventListener("click",function(e){ e.stopPropagation(); $("cmenu").classList.toggle("hidden"); });
+  document.addEventListener("click",function(e){
+    if(!$("cmenu").classList.contains("hidden") && !$("cmenu").contains(e.target) && e.target!==$("cMenuBtn")) closeCMenu();
+  });
+  $("cSwLock").addEventListener("click",function(e){ e.stopPropagation(); toggleLockOnHide(); });
+  $("cWakeBtn").addEventListener("click",function(e){ e.stopPropagation(); toggleWake(); });
+  $("cAvailBtn").addEventListener("click",function(){ closeCMenu(); editAvail(); });
+  $("cProfileBtn").addEventListener("click",function(){ closeCMenu(); showProfile(); });
+  $("cReconfigBtn").addEventListener("click",function(){ closeCMenu(); doReconfig(); });
+  $("cLockBtn").addEventListener("click",function(){ closeCMenu(); startLocked(); });
   function gerarSenha(){
     var abc="ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
     var a=new Uint8Array(24); crypto.getRandomValues(a);
