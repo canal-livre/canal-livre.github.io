@@ -1216,6 +1216,51 @@
     }catch(e){}
   }
 
+  // ---------- instalar o app (aparece sozinho) ----------
+  var _installPrompt=null, _installBar=null;
+  function isStandalone(){ try{ return (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) || window.navigator.standalone===true; }catch(e){ return false; } }
+  function isiOS(){ try{ return /iphone|ipad|ipod/i.test(navigator.userAgent) && !window.MSStream; }catch(e){ return false; } }
+  function makeInstallBar(){
+    if(_installBar) return _installBar;
+    var b=document.createElement("div"); b.id="installBar";
+    b.style.cssText="position:fixed;left:12px;right:12px;bottom:12px;z-index:9999;background:#1d4ed8;color:#fff;border-radius:14px;padding:12px 14px;display:none;box-shadow:0 10px 28px rgba(0,0,0,.4);font-size:15px;align-items:center;gap:10px;justify-content:space-between";
+    var sp=document.createElement("span"); sp.style.cssText="flex:1;line-height:1.3";
+    sp.innerHTML='📲 <b>Instalar o aplicativo</b><br><small style="opacity:.9">Fica com ícone na tela, abre rápido e recebe os avisos.</small>';
+    var btn=document.createElement("button"); btn.textContent="Instalar";
+    btn.style.cssText="background:#fff;color:#1d4ed8;border:0;border-radius:10px;padding:10px 16px;font-weight:700;font-size:15px;white-space:nowrap";
+    var x=document.createElement("button"); x.textContent="✕"; x.title="Agora não";
+    x.style.cssText="background:transparent;color:#fff;border:0;font-size:18px;padding:4px 6px;cursor:pointer";
+    b.appendChild(sp); b.appendChild(btn); b.appendChild(x);
+    document.body.appendChild(b);
+    btn.addEventListener("click",installNow);
+    x.addEventListener("click",function(){ b.style.display="none"; try{ sessionStorage.setItem("cv_installhide","1"); }catch(e){} });
+    _installBar=b; return b;
+  }
+  function showInstallBar(mode){
+    if(isStandalone()) return;
+    try{ if(sessionStorage.getItem("cv_installhide")==="1") return; }catch(e){}
+    var b=makeInstallBar();
+    var sp=b.querySelector("span"), btn=b.querySelectorAll("button")[0];
+    if(mode==="ios"){
+      sp.innerHTML='📲 <b>Instalar no iPhone</b><br><small style="opacity:.92">Toque em <b>Compartilhar</b> (o quadradinho com a seta ↑) e depois em <b>Adicionar à Tela de Início</b>.</small>';
+      btn.style.display="none";
+    } else {
+      sp.innerHTML='📲 <b>Instalar o aplicativo</b><br><small style="opacity:.9">Fica com ícone na tela, abre rápido e recebe os avisos.</small>';
+      btn.style.display="inline-block";
+    }
+    b.style.display="flex";
+  }
+  function installNow(){
+    if(!_installPrompt) return;
+    try{ _installPrompt.prompt();
+      _installPrompt.userChoice.then(function(){ _installPrompt=null; if(_installBar) _installBar.style.display="none"; });
+    }catch(e){}
+  }
+  window.addEventListener("beforeinstallprompt",function(e){ e.preventDefault(); _installPrompt=e; showInstallBar("android"); });
+  window.addEventListener("appinstalled",function(){ _installPrompt=null; if(_installBar) _installBar.style.display="none"; });
+  // iPhone (Safari) não dispara o evento de instalar: mostra as instruções sozinho
+  setTimeout(function(){ if(!isStandalone() && isiOS()) showInstallBar("ios"); },1500);
+
   // ---------- identidade visual ----------
   function paintIdentity(cfg){
     cfg=cfg||load()||{}; var nm=cfg.name||"Portal";
