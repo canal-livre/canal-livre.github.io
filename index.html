@@ -437,15 +437,24 @@
     if(!("Notification" in window)){ lastPushErr="este navegador não tem notificações"; return false; }
     if(!("serviceWorker" in navigator) || !("PushManager" in window)){ lastPushErr="este navegador não permite avisos por push"; return false; }
     if(typeof firebase==="undefined" || !firebase.messaging){ lastPushErr="a biblioteca de avisos não carregou (sem internet?)"; return false; }
+    // cada etapa tem limite de tempo: o botão NUNCA fica preso esperando
+    function prazo(p,ms,oque){ return Promise.race([p,new Promise(function(_,rej){ setTimeout(function(){ rej(new Error("demorou demais em: "+oque)); },ms); })]); }
     try{
-      var perm=await Notification.requestPermission();
-      if(perm!=="granted"){ lastPushErr="você não permitiu as notificações (ficou como '"+perm+"')"; return false; }
+      var perm=Notification.permission;
+      if(perm!=="granted") perm=await prazo(Notification.requestPermission(),60000,"pedir permissão");
+      if(perm!=="granted"){ lastPushErr="as notificações estão bloqueadas para este app ("+perm+"). Libere nas configurações do navegador/celular"; return false; }
       fbReady();
-      try{ pushReg=await navigator.serviceWorker.register("firebase-messaging-sw.js"); }
-      catch(e){ lastPushErr="falha ao registrar o recebedor: "+((e&&e.message)||e); return false; }
-      try{ await navigator.serviceWorker.ready; }catch(e){}
+      // um ÚNICO service worker (sw.js) cuida do cache e dos avisos
+      try{
+        pushReg=await navigator.serviceWorker.getRegistration("./");
+        if(!pushReg || !/\/sw\.js$/.test(((pushReg.active||pushReg.waiting||pushReg.installing||{}).scriptURL)||"")){
+          pushReg=await prazo(navigator.serviceWorker.register("sw.js"),20000,"registrar o recebedor");
+        }
+        try{ await pushReg.update(); }catch(e){}
+        pushReg=await prazo(navigator.serviceWorker.ready,20000,"ativar o recebedor");
+      }catch(e){ lastPushErr="falha no recebedor de avisos: "+((e&&e.message)||e); return false; }
       fbMsg=firebase.messaging();
-      var tok=await fbMsg.getToken({ vapidKey:VAPID_KEY, serviceWorkerRegistration:pushReg });
+      var tok=await prazo(fbMsg.getToken({ vapidKey:VAPID_KEY, serviceWorkerRegistration:pushReg }),30000,"pegar o endereço de aviso");
       if(!tok){ lastPushErr="não recebi o endereço de aviso (token vazio)"; return false; }
       myFcm=tok; pushOn=true;
       try{ var c=load(); if(c){ c.pushOn=true; save(c); } }catch(e){}
@@ -617,7 +626,7 @@
     else { activateChannel(id); }
   }
 
-  function showContacts(){ activeId=null; renderContacts(); paintSwitch(); paintWake(); show("contacts"); applyWake(); }
+  function showContacts(){ activeId=null; renderContacts(); paintSwitch(); paintWake(); paintPush(); show("contacts"); applyWake(); }
   function renderContacts(){
     var box=$("contactList"); if(!box) return; box.innerHTML="";
     if(!CONTACTS.length){ $("contactsEmpty").classList.remove("hidden"); return; }
@@ -730,6 +739,18 @@
     } else { var tx=document.createElement("div"); tx.textContent=o.text||""; b.appendChild(tx); }
     var tm=document.createElement("div"); tm.className="tm"; tm.textContent=fmtTime(o.t||Date.now()); b.appendChild(tm);
     box.appendChild(b); box.scrollTop=box.scrollHeight;
+  }
+  // aviso flutuante visível em QUALQUER tela (contatos ou conversa)
+  var _toastT=null;
+  function toast(t,ms){
+    var el=$("appToast");
+    if(!el){ el=document.createElement("div"); el.id="appToast";
+      el.style.cssText="position:fixed;left:14px;right:14px;top:14px;z-index:10000;background:#0f172a;color:#fff;border:1px solid #334155;border-radius:12px;padding:12px 14px;font-size:14px;line-height:1.35;box-shadow:0 10px 28px rgba(0,0,0,.45);display:none";
+      el.addEventListener("click",function(){ el.style.display="none"; });
+      document.body.appendChild(el); }
+    el.textContent=t; el.style.display="block";
+    if(_toastT) clearTimeout(_toastT);
+    _toastT=setTimeout(function(){ el.style.display="none"; }, ms||6000);
   }
   function addSystem(t){ var box=$("messages"),s=document.createElement("div"); s.className="sysmsg"; s.textContent=t;
     box.appendChild(s); box.scrollTop=box.scrollHeight; }
@@ -918,7 +939,7 @@
   function activateChannel(id){
     activeId=id; markLast(id);
     var k=CH[id], c=contactById(id); if(!k) return;
-    wireOnce(); paintSwitch(); paintWake(); applyWake();
+    wireOnce(); paintSwitch(); paintWake(); paintPush(); applyWake();
     $("messages").innerHTML=""; setMsg(false); show("inside");
     $("chatCompany").textContent=(c&&(c.alias||c.name))||k.peerName||"Novo contato";
     addSystem("Conversa não fica gravada no aparelho.");
@@ -1082,12 +1103,21 @@
   function paintSwitch(){ ["swLockUI","cSwLockUI"].forEach(function(id){ var e=$(id); if(e) e.classList.toggle("on",!!lockOnHide); }); }
   function paintWake(){ ["wakeUI","cWakeUI"].forEach(function(id){ var e=$(id); if(e) e.classList.toggle("on",!!keepAwake); }); }
   function paintPush(){ ["pushUI","cPushUI"].forEach(function(id){ var e=$(id); if(e) e.classList.toggle("on",!!pushOn); }); }
+  var pushBusy=false;
   async function togglePush(){
-    if(pushOn){ disablePush(); paintPush(); addSystem("Avisos com o app fechado DESLIGADOS."); return; }
-    addSystem("Ligando os avisos... autorize as notificações se o aparelho perguntar.");
-    var ok=await enablePush(); paintPush();
-    if(ok){ addSystem("Pronto! Deve ter aparecido um aviso de teste \"Avisos ligados\". Se apareceu, está funcionando neste aparelho."); }
-    else { addSystem("Não consegui ligar: "+(lastPushErr||"motivo desconhecido")+"."); }
+    if(pushBusy) return;                       // evita toque duplo enquanto está ligando
+    function avisa(t,ms){ toast(t,ms); try{ addSystem(t); }catch(e){} }
+    if(pushOn){ disablePush(); paintPush(); avisa("Avisos com o app fechado DESLIGADOS."); return; }
+    pushBusy=true;
+    ["pushUI","cPushUI"].forEach(function(id){ var e=$(id); if(e) e.style.opacity=".5"; });
+    avisa("Ligando os avisos... se o aparelho perguntar, toque em PERMITIR.", 60000);
+    var ok=false;
+    try{ ok=await enablePush(); }catch(e){ lastPushErr=(e&&e.message)||String(e); ok=false; }
+    pushBusy=false;
+    ["pushUI","cPushUI"].forEach(function(id){ var e=$(id); if(e) e.style.opacity=""; });
+    paintPush();
+    if(ok){ avisa("✔ Avisos LIGADOS. Deve ter aparecido um aviso de teste \"Avisos ligados\" — se apareceu, está funcionando neste aparelho.", 9000); }
+    else { avisa("✖ Não consegui ligar: "+(lastPushErr||"motivo desconhecido")+".", 12000); }
   }
   // ações usadas pelos DOIS menus (o da conversa e o dos contatos)
   function toggleLockOnHide(){ lockOnHide=!lockOnHide; paintSwitch(); var c=load(); if(c){ c.lockOnHide=lockOnHide; save(c); } }
@@ -1369,6 +1399,7 @@
   });
   $("cSwLock").addEventListener("click",function(e){ e.stopPropagation(); toggleLockOnHide(); });
   $("cWakeBtn").addEventListener("click",function(e){ e.stopPropagation(); toggleWake(); });
+  $("cPushBtn").addEventListener("click",function(e){ e.stopPropagation(); togglePush(); });
   $("cAvailBtn").addEventListener("click",function(){ closeCMenu(); editAvail(); });
   $("cProfileBtn").addEventListener("click",function(){ closeCMenu(); showProfile(); });
   $("cReconfigBtn").addEventListener("click",function(){ closeCMenu(); doReconfig(); });
