@@ -426,27 +426,35 @@
   }
 
   // ---------- push (avisar com o app fechado) ----------
+  var lastPushErr="", pushReg=null;
   function pushSupported(){
-    try{ return ("Notification" in window) && ("serviceWorker" in navigator)
-      && typeof firebase!=="undefined" && firebase.messaging
-      && (!firebase.messaging.isSupported || firebase.messaging.isSupported()); }
+    try{ return ("Notification" in window) && ("serviceWorker" in navigator) && ("PushManager" in window)
+      && typeof firebase!=="undefined" && !!firebase.messaging; }
     catch(e){ return false; }
   }
-  async function enablePush(){
-    if(!pushSupported()) return false;
+  async function enablePush(silent){
+    lastPushErr="";
+    if(!("Notification" in window)){ lastPushErr="este navegador não tem notificações"; return false; }
+    if(!("serviceWorker" in navigator) || !("PushManager" in window)){ lastPushErr="este navegador não permite avisos por push"; return false; }
+    if(typeof firebase==="undefined" || !firebase.messaging){ lastPushErr="a biblioteca de avisos não carregou (sem internet?)"; return false; }
     try{
       var perm=await Notification.requestPermission();
-      if(perm!=="granted") return false;
+      if(perm!=="granted"){ lastPushErr="você não permitiu as notificações (ficou como '"+perm+"')"; return false; }
       fbReady();
+      try{ pushReg=await navigator.serviceWorker.register("firebase-messaging-sw.js"); }
+      catch(e){ lastPushErr="falha ao registrar o recebedor: "+((e&&e.message)||e); return false; }
+      try{ await navigator.serviceWorker.ready; }catch(e){}
       fbMsg=firebase.messaging();
-      var tok=await fbMsg.getToken({ vapidKey:VAPID_KEY });
-      if(!tok) return false;
+      var tok=await fbMsg.getToken({ vapidKey:VAPID_KEY, serviceWorkerRegistration:pushReg });
+      if(!tok){ lastPushErr="não recebi o endereço de aviso (token vazio)"; return false; }
       myFcm=tok; pushOn=true;
       try{ var c=load(); if(c){ c.pushOn=true; save(c); } }catch(e){}
       try{ fbMsg.onMessage(function(){}); }catch(e){}   // 1º plano: o app já mostra, ignora
       pushBroadcastAll();
+      // aviso de teste na hora: se aparecer, as notificações funcionam neste aparelho
+      if(!silent){ try{ pushReg.showNotification("Avisos ligados ✔", { body:"Você vai receber um toque mesmo com o app fechado.", tag:"canal-teste", renotify:true }); }catch(e){} }
       return true;
-    }catch(e){ return false; }
+    }catch(e){ lastPushErr=(e&&e.message)||String(e); return false; }
   }
   function disablePush(){
     pushOn=false;
@@ -466,7 +474,7 @@
           call:!!opts.call, tag:"canal-"+k.id, link:APP_URL }) });
     }catch(e){}
   }
-  function pushBootstrap(){ try{ var c=load(); if(c&&c.pushOn){ enablePush().then(function(ok){ paintPush(); }); } }catch(e){} }
+  function pushBootstrap(){ try{ var c=load(); if(c&&c.pushOn){ enablePush(true).then(function(ok){ paintPush(); }); } }catch(e){} }
 
   // convite pelo link (#p=...) — apagado do endereço, não vai ao servidor
   var prefillPair=null;
@@ -1076,10 +1084,10 @@
   function paintPush(){ ["pushUI","cPushUI"].forEach(function(id){ var e=$(id); if(e) e.classList.toggle("on",!!pushOn); }); }
   async function togglePush(){
     if(pushOn){ disablePush(); paintPush(); addSystem("Avisos com o app fechado DESLIGADOS."); return; }
-    if(!pushSupported()){ addSystem("Este aparelho/navegador não permite avisos com o app fechado."); return; }
     addSystem("Ligando os avisos... autorize as notificações se o aparelho perguntar.");
     var ok=await enablePush(); paintPush();
-    addSystem(ok?"Pronto! Você vai receber um toque mesmo com o app fechado.":"Não consegui ligar. Verifique se você permitiu notificações para este site.");
+    if(ok){ addSystem("Pronto! Deve ter aparecido um aviso de teste \"Avisos ligados\". Se apareceu, está funcionando neste aparelho."); }
+    else { addSystem("Não consegui ligar: "+(lastPushErr||"motivo desconhecido")+"."); }
   }
   // ações usadas pelos DOIS menus (o da conversa e o dos contatos)
   function toggleLockOnHide(){ lockOnHide=!lockOnHide; paintSwitch(); var c=load(); if(c){ c.lockOnHide=lockOnHide; save(c); } }
