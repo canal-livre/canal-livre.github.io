@@ -182,7 +182,7 @@
         <div class="help hidden" id="conviteAviso"><b>Você recebeu um convite.</b>
           Crie seu acesso abaixo — a conversa já vai ficar salva nos seus contatos.</div>
         <div class="field">
-          <label>Seu nome (a outra pessoa vê este nome)</label>
+          <label>Seu nome (aparece abaixo da logo)</label>
           <input id="cfgName" type="text" placeholder="Ex.: seu nome ou apelido" autocomplete="off">
         </div>
         <div class="field">
@@ -524,7 +524,7 @@
   function getLast(){ try{ return localStorage.getItem("cv_last")||""; }catch(e){ return ""; } }
   async function saveContacts(){
     if(!VK) return; var cfg=load(); if(!cfg) return;
-    try{ cfg.vault=await sealWith(VK,{contacts:CONTACTS.map(function(c){ return {id:c.id,name:c.name,alias:c.alias,pair:c.pair,role:c.role,ts:c.ts}; })}); save(cfg); }catch(e){}
+    try{ cfg.vault=await sealWith(VK,{contacts:CONTACTS.map(function(c){ return {id:c.id,name:c.name,alias:c.alias,pair:c.pair,role:c.role,ts:c.ts,notify:c.notify}; })}); save(cfg); }catch(e){}
   }
   function setContactNameById(id,name){
     var c=contactById(id);
@@ -582,11 +582,25 @@
     var box=document.createElement("div"); box.className="qrbox";
     box.innerHTML='<div class="qrcard">'+
       '<h3 id="coName"></h3><p>O que você quer fazer com este contato?</p>'+
-      '<button id="coRename">Renomear (apelido só seu)</button>'+
+      '<button id="coNotify"><span class="swrow"><span class="sl">Notificar chamadas'+
+        '<small>Toca um aviso (som/vibra) quando esta pessoa te chamar</small></span>'+
+        '<span class="sw" id="coNotifyUI"><i></i></span></span></button>'+
+      '<button id="coRename" style="margin-top:8px">Renomear (apelido só seu)</button>'+
       '<button id="coDelete" style="margin-top:8px;background:#b91c1c">Apagar contato</button>'+
       '<button class="ghost" id="coCancel" style="margin-top:8px">Cancelar</button></div>';
     document.body.appendChild(box);
     box.querySelector("#coName").textContent=contactLabel(c);
+    box.querySelector("#coNotify").style.textAlign="left";
+    function paintNotify(){ box.querySelector("#coNotifyUI").classList.toggle("on", !!c.notify); }
+    paintNotify();
+    box.querySelector("#coNotify").addEventListener("click",function(){
+      c.notify=!c.notify; paintNotify(); saveContacts();
+      if(c.notify){
+        // pede a permissão de notificação SÓ agora (quando o usuário liga a opção)
+        if(("Notification" in window) && Notification.permission==="default"){ try{ Notification.requestPermission(); }catch(e){} }
+        ringStart(); setTimeout(ringStop,700);   // toque curtinho de confirmação
+      }
+    });
     function close(){ try{ document.body.removeChild(box); }catch(e){} }
     box.querySelector("#coCancel").addEventListener("click",close);
     box.addEventListener("click",function(e){ if(e.target===box) close(); });
@@ -655,7 +669,10 @@
   function contactsVisible(){ return !$("contacts").classList.contains("hidden"); }
   function onIncoming(o){ addBubble("you",o); if(document.hidden || !insideVisible()){ setMsg(true); } }
   function setConn(t){ $("connState").textContent=t; }
-  function myName(){ var c=load(); return (c&&c.name)||"Contato"; }
+  // nome que os CONTATOS veem = SOMENTE o nome interno (pubName), definido depois do
+  // desenho em "Meu nome e foto". O nome do disfarce (abaixo da logo) e a logo NUNCA
+  // são enviados aos contatos. Se o interno estiver vazio, não manda nome nenhum.
+  function myName(){ var c=load(); return (c&&c.pubName)||""; }
   function myAvail(){ var c=load(); return (c&&c.avail)||""; }
 
   // ---------- rede (carregar bibliotecas) ----------
@@ -875,18 +892,53 @@
     localStream=st; showCallBar("Chamando...","",false);
     try{ bindCall(k.peer.call(k.otherIdCh,localStream)); }catch(e){ endCall(); }
   }
+  // ---- aviso de chamada (som + vibração) — só para contatos com notificação LIGADA ----
+  var _ac=null, _ringTimer=null;
+  function ringStart(){
+    try{
+      if(!_ac){ var AC=window.AudioContext||window.webkitAudioContext; if(!AC) return; _ac=new AC(); }
+      if(_ac.state==="suspended"){ try{ _ac.resume(); }catch(e){} }
+      function beep(){
+        try{ var o=_ac.createOscillator(), g=_ac.createGain();
+          o.type="sine"; o.frequency.value=880; o.connect(g); g.connect(_ac.destination);
+          var t=_ac.currentTime; g.gain.setValueAtTime(0.0001,t);
+          g.gain.exponentialRampToValueAtTime(0.25,t+0.02);
+          g.gain.exponentialRampToValueAtTime(0.0001,t+0.45);
+          o.start(t); o.stop(t+0.5);
+        }catch(e){}
+      }
+      beep(); if(_ringTimer) clearInterval(_ringTimer); _ringTimer=setInterval(beep,1300);
+      try{ if(navigator.vibrate) navigator.vibrate([350,250,350]); }catch(e){}
+    }catch(e){}
+  }
+  // notificação do sistema (aparece mesmo com o app atrás de outro, enquanto ele estiver vivo)
+  var _callNotif=null;
+  function callNotif(nome){
+    try{
+      if(("Notification" in window) && Notification.permission==="granted"){
+        if(_callNotif){ try{ _callNotif.close(); }catch(e){} }
+        _callNotif=new Notification("Chamada recebida", {body:nome||"", tag:"chamada", renotify:true, silent:false});
+        _callNotif.onclick=function(){ try{ window.focus(); }catch(e){} try{ _callNotif.close(); }catch(e){} };
+      }
+    }catch(e){}
+  }
+  function closeCallNotif(){ try{ if(_callNotif){ _callNotif.close(); _callNotif=null; } }catch(e){} }
+  function ringStop(){ if(_ringTimer){ clearInterval(_ringTimer); _ringTimer=null; } try{ if(navigator.vibrate) navigator.vibrate(0); }catch(e){} closeCallNotif(); }
+
   function onChIncomingCall(k,call){
-    if(k.id===activeId){ pendingCall=call; showCallBar("Chamada recebida","",true); setMsg(true); }
+    var c=contactById(k.id);
+    if(c && c.notify){ ringStart(); callNotif((c.alias||c.name)||k.peerName||""); }  // só se VOCÊ ligou a notificação deste contato
+    if(k.id===activeId){ pendingCall=call; showCallBar("Chamada recebida","",true); setMsg(true);
+      call.on("close",ringStop); }
     else {
       k.pendingBg=call; setMsg(true);
-      var c=contactById(k.id);
       $("bgCallName").textContent="Chamada de "+((c&&(c.alias||c.name))||k.peerName||"contato");
       $("bgCall").classList.remove("hidden");
-      call.on("close",function(){ if(k.pendingBg===call){ k.pendingBg=null; $("bgCall").classList.add("hidden"); } });
+      call.on("close",function(){ ringStop(); if(k.pendingBg===call){ k.pendingBg=null; $("bgCall").classList.add("hidden"); } });
     }
   }
   async function acceptCall(){
-    if(!pendingCall) return;
+    if(!pendingCall) return; ringStop();
     var st=await getMic(); if(!st) return;
     localStream=st; var c=pendingCall; pendingCall=null;
     try{ c.answer(localStream); bindCall(c); }catch(e){ endCall(); }
@@ -898,6 +950,7 @@
     c.on("close",endCall); c.on("error",endCall);
   }
   function endCall(){
+    ringStop();
     try{ if(currentCall) currentCall.close(); }catch(e){}
     try{ if(pendingCall) pendingCall.close(); }catch(e){}
     currentCall=null; pendingCall=null;
@@ -907,15 +960,31 @@
   }
   function findPendingBg(){ var ids=Object.keys(CH); for(var i=0;i<ids.length;i++){ if(CH[ids[i]].pendingBg) return CH[ids[i]]; } return null; }
   $("bgCallAccept").addEventListener("click",function(){
-    var k=findPendingBg(); $("bgCall").classList.add("hidden"); if(!k) return;
+    ringStop(); var k=findPendingBg(); $("bgCall").classList.add("hidden"); if(!k) return;
     var call=k.pendingBg; k.pendingBg=null;
     openContact(k.id);
     getMic().then(function(st){ if(!st) return; localStream=st; try{ call.answer(localStream); bindCall(call); }catch(e){ endCall(); } });
   });
   $("bgCallReject").addEventListener("click",function(){
-    var k=findPendingBg(); $("bgCall").classList.add("hidden"); if(!k) return;
+    ringStop(); var k=findPendingBg(); $("bgCall").classList.add("hidden"); if(!k) return;
     try{ k.pendingBg.close(); }catch(e){} k.pendingBg=null;
   });
+
+  // ---------- recusa rápida: dois toques em qualquer lugar ----------
+  function callRinging(){ return !!(pendingCall || findPendingBg()); }
+  function rejectIncoming(){
+    ringStop();
+    if(pendingCall){ try{ pendingCall.close(); }catch(e){} pendingCall=null; hideCallBar(); return; }
+    var k=findPendingBg();
+    if(k){ try{ if(k.pendingBg) k.pendingBg.close(); }catch(e){} k.pendingBg=null; $("bgCall").classList.add("hidden"); }
+  }
+  (function(){ var last=0;
+    document.addEventListener("pointerup",function(){
+      if(!callRinging()) return;
+      var n=Date.now();
+      if(n-last<450){ last=0; rejectIncoming(); } else last=n;
+    },true);
+  })();
 
   // ---------- manter tela ligada ----------
   var wakeSupported = ("wakeLock" in navigator);
@@ -1003,7 +1072,7 @@
     if(pend.length>=12){ CONTACTS.push({id:rnd(8),name:"",alias:null,pair:pend,role:"b",ts:Date.now()}); }
     VK=await keyFromPattern(pat,salt);
     var vault=null; try{ vault=await sealWith(VK,{contacts:CONTACTS}); }catch(e){ vault=null; }
-    var ok = vault && save({v:CFG_VERSION,name:pendingName,logo:pendingLogo||null,colors:pendingColors||DEF_COLORS,salt:salt,vault:vault,att:0,lockOnHide:true,keepAwake:false});
+    var ok = vault && save({v:CFG_VERSION,name:pendingName,pubName:"",logo:pendingLogo||null,colors:pendingColors||DEF_COLORS,salt:salt,vault:vault,att:0,lockOnHide:true,keepAwake:false});
     if(!ok){ m.className="msgline err"; m.textContent="Não foi possível salvar (imagem muito grande?)."; return; }
     m.className="msgline ok"; m.textContent="Pronto!";
     var openId = CONTACTS.length?CONTACTS[0].id:null;
@@ -1175,10 +1244,13 @@
     var cfg=load()||{}; var tmpLogo=(cfg.logo||null), tmpColors=(cfg.colors||null);
     var box=document.createElement("div"); box.className="qrbox";
     box.innerHTML='<div class="qrcard"><h3>Meu nome e foto</h3>'+
-      '<p>É isto que a outra pessoa vê. Você pode mudar quando quiser.</p>'+
+      '<p>Você pode mudar quando quiser.</p>'+
       '<div class="logowrap" style="margin:0 auto 12px"><div class="logo" id="pfPreview"></div></div>'+
-      '<input class="invlink" id="pfName" style="font-size:14px;text-align:center" placeholder="Seu nome">'+
-      '<div class="logopick" style="justify-content:center;margin-top:10px">'+
+      '<div style="font-size:11.5px;color:#94a3b8;text-align:left;margin:2px 2px 3px">Nome abaixo da logo (aparece na SUA tela):</div>'+
+      '<input class="invlink" id="pfName" style="font-size:14px;text-align:center" placeholder="Ex.: Coca-Cola">'+
+      '<div style="font-size:11.5px;color:#94a3b8;text-align:left;margin:9px 2px 3px">Nome que seus CONTATOS veem:</div>'+
+      '<input class="invlink" id="pfPub" style="font-size:14px;text-align:center" placeholder="Ex.: João">'+
+      '<div class="logopick" style="justify-content:center;margin-top:12px">'+
         '<button type="button" class="ghost" id="pfPick" style="margin:0;font-size:13px;padding:11px">Trocar foto/logo</button>'+
         '<button type="button" class="rm hidden" id="pfClear" style="margin:0;font-size:13px;padding:11px">Remover</button></div>'+
       '<input id="pfFile" type="file" accept="image/*" class="hidden"><div id="pfMsg" class="msgline"></div>'+
@@ -1186,7 +1258,8 @@
       '<button class="ghost" id="pfCancel" style="margin-top:8px">Cancelar</button></div>';
     document.body.appendChild(box);
     var q=function(id){ return box.querySelector("#"+id); };
-    q("pfName").value=cfg.name||""; fillLogo(q("pfPreview"),tmpLogo); if(tmpLogo) q("pfClear").classList.remove("hidden");
+    q("pfName").value=cfg.name||""; q("pfPub").value=cfg.pubName||"";
+    fillLogo(q("pfPreview"),tmpLogo); if(tmpLogo) q("pfClear").classList.remove("hidden");
     q("pfPick").addEventListener("click",function(){ q("pfFile").click(); });
     q("pfFile").addEventListener("change",function(){ var f=this.files&&this.files[0]; if(!f) return;
       scaleImage(f,240,function(d,cols){ if(!d) return; tmpLogo=d; tmpColors=cols||DEF_COLORS; fillLogo(q("pfPreview"),tmpLogo); q("pfClear").classList.remove("hidden"); }); });
@@ -1195,10 +1268,10 @@
     q("pfCancel").addEventListener("click",close);
     box.addEventListener("click",function(e){ if(e.target===box) close(); });
     q("pfSave").addEventListener("click",function(){
-      var nm=q("pfName").value.trim();
-      if(!nm){ q("pfMsg").className="msgline err"; q("pfMsg").textContent="Escreva o seu nome."; return; }
+      var nm=q("pfName").value.trim(), pub=q("pfPub").value.trim();
+      if(!nm){ q("pfMsg").className="msgline err"; q("pfMsg").textContent="Escreva o nome de baixo da logo."; return; }
       var c=load(); if(!c){ close(); return; }
-      c.name=nm; c.logo=tmpLogo||null; c.colors=tmpColors||c.colors||DEF_COLORS;
+      c.name=nm; c.pubName=pub; c.logo=tmpLogo||null; c.colors=tmpColors||c.colors||DEF_COLORS;
       if(!save(c)){ q("pfMsg").className="msgline err"; q("pfMsg").textContent="Não foi possível salvar (imagem muito grande?)."; return; }
       paintIdentity(c);
       Object.keys(CH).forEach(function(id){ sendHelloCh(CH[id]); }); fbAvailAll();
