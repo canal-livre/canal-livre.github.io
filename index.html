@@ -250,6 +250,11 @@
             <small>Enquanto o app estiver aberto, a tela não apaga sozinha</small></span>
             <span class="sw" id="cWakeUI"><i></i></span></span>
         </button>
+        <button id="cPushBtn">
+          <span class="swrow"><span class="sl">Avisar com o app fechado
+            <small>Recebe um toque mesmo com o app fechado (precisa permitir notificações)</small></span>
+            <span class="sw" id="cPushUI"><i></i></span></span>
+        </button>
         <button id="cAvailBtn">Minha disponibilidade</button>
         <button id="cProfileBtn">Meu nome e foto</button>
         <button id="cReconfigBtn">Reconfigurar tudo</button>
@@ -322,6 +327,13 @@
               <span class="sw" id="wakeUI"><i></i></span>
             </span>
           </button>
+          <button id="pushBtn">
+            <span class="swrow">
+              <span class="sl">Avisar com o app fechado
+                <small>Recebe um toque mesmo com o app fechado (precisa permitir notificações)</small></span>
+              <span class="sw" id="pushUI"><i></i></span>
+            </span>
+          </button>
           <button id="availBtn">Minha disponibilidade</button>
           <button id="inviteThisBtn">Mostrar o convite deste contato</button>
           <button id="reconnectBtn">Reconectar</button>
@@ -347,6 +359,7 @@
 <!-- Firebase (só presença: online, visto às, disponibilidade, chamou às). Mensagens NÃO passam por aqui. -->
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-database-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-messaging-compat.js"></script>
 
 <script>
 (function(){
@@ -391,6 +404,13 @@
     messagingSenderId:"93288022454",
     appId:"1:93288022454:web:99e1ddfb77a26067b20117"
   };
+  // ---------- Avisos com o app fechado (push FCM via carteiro) ----------
+  // O carteiro fica num endereço NEUTRO (não revela nome). As mensagens NUNCA
+  // passam por ele — só um "toque" para avisar. O conteúdo continua ponta a ponta.
+  var CARTEIRO_URL="https://aviso-canal.canal-livre.workers.dev/";
+  var VAPID_KEY="BEBrVuAcLVmY0-YEQSpA9MwIPXXq4uFcWMI0LlwZmAXtUGuUgvV9MsGyKN2DIWXGiD1jdTU9Z51ctRN8eYojZiY";
+  var fbMsg=null, myFcm="", pushOn=false;
+
   var fbApp=null, fbClientId="";
   function fbClient(){
     if(fbClientId) return fbClientId;
@@ -404,6 +424,49 @@
     try{ if(!fbApp) fbApp=(firebase.apps&&firebase.apps.length)?firebase.app():firebase.initializeApp(FB_CFG); return firebase.database(); }
     catch(e){ return null; }
   }
+
+  // ---------- push (avisar com o app fechado) ----------
+  function pushSupported(){
+    try{ return ("Notification" in window) && ("serviceWorker" in navigator)
+      && typeof firebase!=="undefined" && firebase.messaging
+      && (!firebase.messaging.isSupported || firebase.messaging.isSupported()); }
+    catch(e){ return false; }
+  }
+  async function enablePush(){
+    if(!pushSupported()) return false;
+    try{
+      var perm=await Notification.requestPermission();
+      if(perm!=="granted") return false;
+      fbReady();
+      fbMsg=firebase.messaging();
+      var tok=await fbMsg.getToken({ vapidKey:VAPID_KEY });
+      if(!tok) return false;
+      myFcm=tok; pushOn=true;
+      try{ var c=load(); if(c){ c.pushOn=true; save(c); } }catch(e){}
+      try{ fbMsg.onMessage(function(){}); }catch(e){}   // 1º plano: o app já mostra, ignora
+      pushBroadcastAll();
+      return true;
+    }catch(e){ return false; }
+  }
+  function disablePush(){
+    pushOn=false;
+    try{ var c=load(); if(c){ c.pushOn=false; save(c); } }catch(e){}
+    Object.keys(CH).forEach(function(id){ try{ if(CH[id].fbMeRef) CH[id].fbMeRef.update({fcm:null}); }catch(e){} });
+  }
+  function pushBroadcastAll(){
+    if(!pushOn||!myFcm) return;
+    Object.keys(CH).forEach(function(id){ try{ if(CH[id].fbMeRef) CH[id].fbMeRef.update({fcm:myFcm}); }catch(e){} });
+  }
+  async function sendPush(k,opts){
+    if(!k||!k.peerFcm) return; opts=opts||{};
+    try{
+      await fetch(CARTEIRO_URL,{ method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({ token:k.peerFcm, title:(myName()||"Canal"),
+          body:opts.body||(opts.call?"Chamada recebida":"Nova mensagem"),
+          call:!!opts.call, tag:"canal-"+k.id, link:APP_URL }) });
+    }catch(e){}
+  }
+  function pushBootstrap(){ try{ var c=load(); if(c&&c.pushOn){ enablePush().then(function(ok){ paintPush(); }); } }catch(e){} }
 
   // convite pelo link (#p=...) — apagado do endereço, não vai ao servidor
   var prefillPair=null;
@@ -693,8 +756,8 @@
 
   // ---------- presença guardada por contato ----------
   function loadPeerInto(k){ try{ var p=JSON.parse(localStorage.getItem("cv_peer_"+k.id)||"null");
-    if(p){ k.peerName=p.name||""; k.peerAvail=p.avail||""; k.peerLastSeen=p.lastSeen||0; k.lastContact=p.lastMsg||0; } }catch(e){} }
-  function savePeerOf(k){ try{ localStorage.setItem("cv_peer_"+k.id, JSON.stringify({name:k.peerName,avail:k.peerAvail,lastSeen:k.peerLastSeen,lastMsg:k.lastContact})); }catch(e){} }
+    if(p){ k.peerName=p.name||""; k.peerAvail=p.avail||""; k.peerLastSeen=p.lastSeen||0; k.lastContact=p.lastMsg||0; k.peerFcm=p.fcm||""; } }catch(e){} }
+  function savePeerOf(k){ try{ localStorage.setItem("cv_peer_"+k.id, JSON.stringify({name:k.peerName,avail:k.peerAvail,lastSeen:k.peerLastSeen,lastMsg:k.lastContact,fcm:k.peerFcm||""})); }catch(e){} }
 
   // ==================== POOL DE CANAIS ====================
   // Cada contato tem um canal vivo (conexão P2P própria) enquanto o app está
@@ -727,6 +790,7 @@
     var k={ id:c.id, pair:c.pair, role:c.role||"a", peer:null, conn:null, hbTimer:null, retry:null,
       roomKey:null, buffer:[], unread:false, pendingBg:null,
       peerName:"", peerAvail:"", peerLastSeen:0, lastContact:0, peerOnlineFB:false,
+      peerFcm:"", wantCall:0,
       fbRoomRef:null, fbMeRef:null, myIdCh:null, otherIdCh:null };
     CH[c.id]=k; loadPeerInto(k);
     try{ k.roomKey=await deriveRoomKey(c.pair); }catch(e){}
@@ -783,6 +847,10 @@
       k.hbTimer=setInterval(function(){ if(k.conn&&k.conn.open) sendCtlCh(k,{t:"ping",ts:Date.now()}); },15000);
       if(k.id===activeId){ setConn("Conectado"); addSystem("Canal seguro estabelecido."); updatePeerUI(); }
       else if(contactsVisible()) renderContacts();
+      // se pedi uma chamada enquanto o outro estava fechado, agora que conectou eu ligo
+      if(k.wantCall && (Date.now()-k.wantCall)<90000 && k.id===activeId && !currentCall && !pendingCall){
+        k.wantCall=0; setTimeout(function(){ startCall(); },900);
+      } else { k.wantCall=0; }
     });
     conn.on("data",async function(p){
       if(!k.roomKey) return;
@@ -810,7 +878,7 @@
       sha(k.pair+":presenca").then(function(room){
         room=room.slice(0,32);
         k.fbRoomRef=db.ref("p/"+room); k.fbMeRef=db.ref("p/"+room+"/"+me);
-        k.fbMeRef.update({ name:myName(), avail:myAvail(), online:true, lastSeen:TS });
+        k.fbMeRef.update({ name:myName(), avail:myAvail(), online:true, lastSeen:TS, fcm:(pushOn&&myFcm)?myFcm:null });
         k.fbMeRef.onDisconnect().update({ online:false, lastSeen:TS });
         k.fbRoomRef.on("value",function(snap){
           var v=snap.val()||{}, other=null;
@@ -821,6 +889,7 @@
             if(typeof other.avail==="string") k.peerAvail=other.avail;
             if(other.lastSeen && other.lastSeen>k.peerLastSeen) k.peerLastSeen=other.lastSeen;
             if(other.lastKnock && other.lastKnock>k.lastContact) k.lastContact=other.lastKnock;
+            if(typeof other.fcm==="string" && other.fcm) k.peerFcm=other.fcm;
             savePeerOf(k);
           } else { k.peerOnlineFB=false; }
           if(k.id===activeId) updatePeerUI(); else if(contactsVisible()) renderContacts();
@@ -870,6 +939,8 @@
     addBubble("me",o);
     var k=CH[activeId]; if(!k) return;
     fbKnockCh(k);
+    // se o outro não está conectado agora, manda um "toque" (aviso) para ele abrir o app
+    if(!(k.conn&&k.conn.open) && k.peerFcm){ sendPush(k,{body:"Nova mensagem"}); }
     if(!k.roomKey) return;
     encWith(k.roomKey,o).then(function(p){ if(k.conn&&k.conn.open) k.conn.send(p); }).catch(function(){});
   }
@@ -886,7 +957,13 @@
     try{ return await navigator.mediaDevices.getUserMedia({audio:true}); }
     catch(e){ addSystem("Microfone não autorizado."); return null; } }
   async function startCall(){
-    var k=CH[activeId]; if(!k||!k.conn||!k.conn.open){ addSystem("O outro aparelho não está conectado."); return; }
+    var k=CH[activeId]; if(!k) return;
+    if(!(k.conn&&k.conn.open)){
+      if(k.peerFcm){ sendPush(k,{call:true,body:"Chamada recebida"}); k.wantCall=Date.now();
+        addSystem("Toquei o aparelho do contato. Assim que ele abrir o app, a chamada conecta."); }
+      else addSystem("O outro aparelho não está conectado.");
+      return;
+    }
     if(currentCall||pendingCall) return;
     var st=await getMic(); if(!st) return;
     localStream=st; showCallBar("Chamando...","",false);
@@ -996,6 +1073,14 @@
   function applyWake(){ if(keepAwake) acquireWake(); else releaseWake(); }
   function paintSwitch(){ ["swLockUI","cSwLockUI"].forEach(function(id){ var e=$(id); if(e) e.classList.toggle("on",!!lockOnHide); }); }
   function paintWake(){ ["wakeUI","cWakeUI"].forEach(function(id){ var e=$(id); if(e) e.classList.toggle("on",!!keepAwake); }); }
+  function paintPush(){ ["pushUI","cPushUI"].forEach(function(id){ var e=$(id); if(e) e.classList.toggle("on",!!pushOn); }); }
+  async function togglePush(){
+    if(pushOn){ disablePush(); paintPush(); addSystem("Avisos com o app fechado DESLIGADOS."); return; }
+    if(!pushSupported()){ addSystem("Este aparelho/navegador não permite avisos com o app fechado."); return; }
+    addSystem("Ligando os avisos... autorize as notificações se o aparelho perguntar.");
+    var ok=await enablePush(); paintPush();
+    addSystem(ok?"Pronto! Você vai receber um toque mesmo com o app fechado.":"Não consegui ligar. Verifique se você permitiu notificações para este site.");
+  }
   // ações usadas pelos DOIS menus (o da conversa e o dos contatos)
   function toggleLockOnHide(){ lockOnHide=!lockOnHide; paintSwitch(); var c=load(); if(c){ c.lockOnHide=lockOnHide; save(c); } }
   function toggleWake(){
@@ -1029,6 +1114,7 @@
       if(!$("menu").classList.contains("hidden") && !$("menu").contains(e.target) && e.target!==$("menuBtn")){ $("menu").classList.add("hidden"); } });
     $("swLock").addEventListener("click",function(e){ e.stopPropagation(); toggleLockOnHide(); });
     $("wakeBtn").addEventListener("click",function(e){ e.stopPropagation(); toggleWake(); });
+    $("pushBtn").addEventListener("click",function(e){ e.stopPropagation(); togglePush(); });
     $("availBtn").addEventListener("click",function(){ $("menu").classList.add("hidden"); editAvail(); });
     $("inviteThisBtn").addEventListener("click",function(){ $("menu").classList.add("hidden"); if(activeId){ var k=CH[activeId]; if(k) showInvite(k.pair); } });
     $("reconnectBtn").addEventListener("click",function(){ $("menu").classList.add("hidden"); var k=CH[activeId]; if(k){ setConn("Reconectando..."); maybeConnect(k); } });
@@ -1203,6 +1289,7 @@
     var pend=(prefillPair||"").trim(); prefillPair=null;
     setTimeout(function(){
       poolStart().then(function(){
+        pushBootstrap();
         if(pend.length>=12){ addContactFromPair(pend,true,"b"); }
         else { var last=getLast(); if(last && contactById(last)) openContact(last); else showContacts(); }
       });
