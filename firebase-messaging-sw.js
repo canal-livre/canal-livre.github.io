@@ -1,70 +1,19 @@
-/* Service worker ÚNICO do app (endereço neutro).
-   1) Cache: REDE PRIMEIRO, cache só como reserva (sem internet, abre a última cópia).
-   2) Avisos com o app fechado (push): mostra o "toque" que o carteiro manda.
-   Não usa biblioteca externa (nada de importScripts) — assim nunca quebra ao carregar.
-   NÃO guarda mensagens, fotos, senhas nem o desenho. O aviso só traz nome + "nova mensagem"/"chamada". */
-var CACHE = "canal-livre-v2";
-var APP_URL = "https://canal-livre.github.io/";
-var BASICOS = ["./", "./index.html", "./manifest.json", "icon-192.png", "icon-512.png"];
-
-self.addEventListener("install", function(e){
-  self.skipWaiting();
-  e.waitUntil(caches.open(CACHE).then(function(c){ return c.addAll(BASICOS); }).catch(function(){}));
+/* Portal web2. Cache contains only public application files, never messages or profiles. */
+var CACHE='portal-web2', APP_URL=self.location.origin+'/';
+var ASSETS=['./','./index.html','./manifest.json','./icon-192.png','./icon-512.png',
+ './firebase-app-compat.js','./firebase-database-compat.js','./firebase-messaging-compat.js','./peerjs.min.js','./qrcode.js'];
+self.addEventListener('install',function(e){e.waitUntil(caches.open(CACHE).then(function(c){return c.addAll(ASSETS);}));});
+// Activate on next open, avoiding replacement during a conversation.
+self.addEventListener('activate',function(e){e.waitUntil(caches.keys().then(function(keys){return Promise.all(keys.filter(function(k){return k==='canal-livre-v2'||k.indexOf('portal-web')===0&&k!==CACHE;}).map(function(k){return caches.delete(k);}));}).then(function(){return self.clients.claim();}));});
+self.addEventListener('fetch',function(e){
+ var r=e.request,u=new URL(r.url);if(r.method!=='GET'||u.origin!==self.location.origin)return;
+ if(r.mode==='navigate'){
+  e.respondWith(fetch(r).then(function(v){if(v.ok){var copy=v.clone();e.waitUntil(caches.open(CACHE).then(function(c){return c.put('./index.html',copy);}));}return v;}).catch(function(){return caches.match('./index.html').then(function(v){return v||Response.error();});}));return;
+ }
+ if(!ASSETS.some(function(a){return new URL(a,self.registration.scope).pathname===u.pathname;}))return;
+ e.respondWith(caches.match(r).then(function(v){return v||fetch(r);}));
 });
-self.addEventListener("activate", function(e){
-  e.waitUntil(
-    caches.keys().then(function(ks){
-      return Promise.all(ks.map(function(k){ if(k!==CACHE) return caches.delete(k); }));
-    }).then(function(){ return self.clients.claim(); }).catch(function(){})
-  );
+self.addEventListener('push',function(e){
+ e.waitUntil(self.registration.showNotification('Portal',{body:'Há uma atualização disponível.',tag:'portal-atualizacao',icon:'icon-192.png',badge:'icon-192.png',data:{link:APP_URL}}));
 });
-self.addEventListener("fetch", function(e){
-  var req = e.request;
-  if(req.method !== "GET") return;
-  if(new URL(req.url).origin !== self.location.origin) return;
-  e.respondWith(
-    fetch(req).then(function(resp){
-      if(resp && resp.status === 200 && resp.type === "basic"){
-        var copia = resp.clone();
-        caches.open(CACHE).then(function(c){ c.put(req, copia); }).catch(function(){});
-      }
-      return resp;
-    }).catch(function(){
-      return caches.match(req).then(function(m){ return m || caches.match("./index.html"); });
-    })
-  );
-});
-
-// ---------- avisos (push) ----------
-self.addEventListener("push", function(e){
-  var d = {};
-  try{ d = e.data ? e.data.json() : {}; }catch(x){ try{ d = { notification:{ body: e.data.text() } }; }catch(y){ d = {}; } }
-  var n = d.notification || {};
-  var dados = d.data || {};
-  var chamada = (dados.tipo === "chamada") || /chamada/i.test(n.body || "");
-  var titulo = n.title || dados.de || "Canal";
-  var corpo = n.body || (chamada ? "Chamada recebida" : "Nova mensagem");
-  var link = (d.fcmOptions && d.fcmOptions.link) || n.click_action || APP_URL;
-  e.waitUntil(self.registration.showNotification(titulo, {
-    body: corpo,
-    tag: n.tag || "canal",
-    renotify: true,
-    requireInteraction: !!chamada,
-    vibrate: chamada ? [400,200,400,200,400] : [300,150,300],
-    icon: "icon-192.png",
-    badge: "icon-192.png",
-    data: { link: link }
-  }));
-});
-
-// tocar no aviso: abre (ou traz para a frente) o app
-self.addEventListener("notificationclick", function(e){
-  e.notification.close();
-  var link = (e.notification.data && e.notification.data.link) || APP_URL;
-  e.waitUntil(
-    self.clients.matchAll({ type:"window", includeUncontrolled:true }).then(function(list){
-      for(var i=0;i<list.length;i++){ if("focus" in list[i]) return list[i].focus(); }
-      if(self.clients.openWindow) return self.clients.openWindow(link);
-    })
-  );
-});
+self.addEventListener('notificationclick',function(e){e.notification.close();e.waitUntil(self.clients.matchAll({type:'window',includeUncontrolled:true}).then(function(list){for(var i=0;i<list.length;i++){if(new URL(list[i].url).origin===self.location.origin&&'focus' in list[i])return list[i].focus();}return self.clients.openWindow(APP_URL);}));});
